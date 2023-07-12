@@ -1,0 +1,168 @@
+using System;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+
+class PasswordManager
+{
+    private const string KeyFileName = "key.bin";
+    private const string PasswordsFileName = "passwords.bin";
+    private byte[] encryptionKey;
+
+    public PasswordManager()
+    {
+        // Uygulama başladığında şifrelenmiş anahtarın yüklenmesi
+        LoadEncryptionKey();
+    }
+
+    public void SavePassword(string username, string password)
+    {
+        // Kullanıcı adı ve şifreyi şifreleyip kaydetme
+        byte[] encryptedUsername = EncryptString(username);
+        byte[] encryptedPassword = EncryptString(password);
+
+        using (var fileStream = new FileStream(PasswordsFileName, FileMode.Append, FileAccess.Write))
+        {
+            fileStream.Write(encryptedUsername, 0, encryptedUsername.Length);
+            fileStream.Write(encryptedPassword, 0, encryptedPassword.Length);
+        }
+    }
+
+    public string GetPassword(string username)
+    {
+        // Kullanıcı adına ait şifreyi geri döndürme
+        byte[] encryptedUsername = EncryptString(username);
+        byte[] encryptedPassword = new byte[512]; // Örneğin, maksimum 512 byte şifre depolandığını varsayalım
+
+        using (var fileStream = new FileStream(PasswordsFileName, FileMode.Open, FileAccess.Read))
+        {
+            while (fileStream.Read(encryptedUsername, 0, encryptedUsername.Length) > 0)
+            {
+                int bytesRead = fileStream.Read(encryptedPassword, 0, encryptedPassword.Length);
+                if (bytesRead > 0)
+                {
+                    string decryptedUsername = DecryptString(encryptedUsername);
+                    if (decryptedUsername == username)
+                    {
+                        return DecryptString(encryptedPassword);
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private void LoadEncryptionKey()
+    {
+        if (File.Exists(KeyFileName))
+        {
+            // Şifrelenmiş anahtarın yüklenmesi
+            byte[] encryptedKey = File.ReadAllBytes(KeyFileName);
+            string password = PromptForPassword(); // Kullanıcıdan parola isteme (örnektir)
+
+            using (var derivedBytes = new Rfc2898DeriveBytes(password, encryptedKey))
+            {
+                encryptionKey = derivedBytes.GetBytes(16); // 128 bit (16 byte) şifreleme anahtarı
+            }
+        }
+        else
+        {
+            // Yeni bir anahtar oluşturma
+            string password = PromptForPassword();
+            byte[] salt = new byte[8]; // Örneğin, 8 byte tuzlama değeri kullanalım
+
+            using (var rng = new RNGCryptoServiceProvider())
+            {
+                rng.GetBytes(salt);
+            }
+
+            using (var derivedBytes = new Rfc2898DeriveBytes(password, salt))
+            {
+                encryptionKey = derivedBytes.GetBytes(16);
+
+                byte[] encryptedKey = derivedBytes.GetBytes(16); // Anahtarın kendisinin şifrelenmesi
+                File.WriteAllBytes(KeyFileName, encryptedKey);
+            }
+        }
+    }
+
+    private byte[] EncryptString(string plainText)
+    {
+        using (var aes = Aes.Create())
+        {
+            aes.Key = encryptionKey;
+            aes.GenerateIV();
+
+            byte[] encrypted;
+
+            using (var encryptor = aes.CreateEncryptor())
+            using (var memoryStream = new MemoryStream())
+            {
+                memoryStream.Write(aes.IV, 0, aes.IV.Length);
+
+                using (var cryptoStream = new CryptoStream(memoryStream, encryptor, CryptoStreamMode.Write))
+                {
+                    byte[] plainTextBytes = Encoding.UTF8.GetBytes(plainText);
+                    cryptoStream.Write(plainTextBytes, 0, plainTextBytes.Length);
+                }
+
+                encrypted = memoryStream.ToArray();
+            }
+
+            return encrypted;
+        }
+    }
+
+    private string DecryptString(byte[] cipherText)
+    {
+        using (var aes = Aes.Create())
+        {
+            aes.Key = encryptionKey;
+            aes.IV = cipherText.Take(16).ToArray(); // İlk 16 byte IV'de
+
+            using (var decryptor = aes.CreateDecryptor())
+            using (var memoryStream = new MemoryStream(cipherText.Skip(16).ToArray()))
+            using (var cryptoStream = new CryptoStream(memoryStream, decryptor, CryptoStreamMode.Read))
+            using (var reader = new StreamReader(cryptoStream))
+            {
+                return reader.ReadToEnd();
+            }
+        }
+    }
+
+    private string PromptForPassword()
+    {
+        Console.WriteLine("Lütfen bir parola girin: ");
+        return Console.ReadLine();
+    }
+}
+
+class Program
+{
+    static void Main()
+    {
+        var passwordManager = new PasswordManager();
+
+        Console.WriteLine("Kullanıcı adı: ");
+        string username = Console.ReadLine();
+
+        Console.WriteLine("Şifre: ");
+        string password = Console.ReadLine();
+
+        passwordManager.SavePassword(username, password);
+
+        Console.WriteLine("Kullanıcı adı: ");
+        string usernameToRetrieve = Console.ReadLine();
+
+        string retrievedPassword = passwordManager.GetPassword(usernameToRetrieve);
+        if (retrievedPassword != null)
+        {
+            Console.WriteLine("Şifre: " + retrievedPassword);
+        }
+        else
+        {
+            Console.WriteLine("Şifre bulunamadı.");
+        }
+    }
+}
